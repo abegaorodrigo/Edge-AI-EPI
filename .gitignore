@@ -1,0 +1,6 @@
+.venv
+__pycache__
+*.jpg
+*.pt
+runs
+PPE-Detection-1

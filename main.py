@@ -2,15 +2,12 @@
 API de Deteccao de EPIs
 ========================
 
-Este arquivo pega o script original (que rodava o YOLO numa unica imagem
-local, mostrava numa janela com cv2.imshow) e o transforma numa API web
-com dois endpoints, que e o formato pedido no teste tecnico.
+API web construida com FastAPI para deteccao de Equipamentos de Protecao
+Individual (EPIs) em tempo real usando YOLOv8.
 
-A logica de deteccao (rodar o modelo, separar pessoas de itens de EPI,
-verificar se o item esta na posicao esperada do corpo) e a MESMA do
-script original. So mudou o "empacotamento": em vez de rodar direto no
-terminal e abrir uma janela, agora ela roda dentro de funcoes que a API
-chama quando alguem manda uma imagem por HTTP.
+Oferece endpoints para:
+1. Retorno estruturado em JSON (/predict) com caixas, confiancas, alertas de conformidade e tempos detalhados.
+2. Retorno visual anotado (/predict/annotated) com caixas padronizadas, cores por classe e status de conformidade (verde/vermelho).
 """
 
 import os
@@ -26,30 +23,35 @@ app = FastAPI(title="Deteccao de EPIs")
 # --------------------------------------------------------------------
 # 1. Carrega o modelo UMA VEZ, quando a API sobe (nao a cada requisicao)
 # --------------------------------------------------------------------
-# No seu script original essa linha era:
-#   model = YOLO(r"runs\detect\train-8\weights\best.pt")
-# Aqui so trocamos o caminho fixo por uma variavel de ambiente, para o
-# Docker conseguir apontar para o arquivo certo. Se o arquivo treinado
-# nao existir (ex: rodando so para testar a API), cai para o modelo
-# generico do YOLO (yolov8n.pt) so para a API nao quebrar.
-
-
 MODEL_PATH = os.getenv("MODEL_PATH", ".\\runs\\detect\\train-8\\weights\\best.pt")
 
 model = YOLO(MODEL_PATH) if os.path.isfile(MODEL_PATH) else YOLO("yolov8n.pt")
 
-# Classes do seu dataset, na mesma ordem do data.yaml usado no treino
+# Classes do dataset na mesma ordem do data.yaml usado no treino
 CLASS_NAMES = {0: "boots", 1: "gloves", 2: "helmet", 3: "human", 4: "vest"}
 
-
+# Cores BGR padronizadas para cada classe
+CLASS_COLORS = {
+    "helmet": (255, 200, 0),    # Ciano / Azul Claro
+    "vest": (0, 215, 255),      # Amarelo / Dourado
+    "gloves": (0, 140, 255),    # Laranja
+    "boots": (200, 0, 200),     # Roxo
+    "human": (255, 255, 255),   # Branco
+}
 
 
 def rodar_deteccao(imagem):
     results = model.predict(source=imagem, conf=0.5, verbose=False)
     result = results[0]
 
-    tempos = result.speed
-    tempo_inferencia_ms = round(sum(tempos.values()), 2)
+    # result.speed contem {'preprocess': float, 'inference': float, 'postprocess': float} em ms
+    # Arredonda cada etapa para 2 casas decimais
+    duracao = {
+        "preprocess": round(result.speed.get("preprocess", 0.0), 2),
+        "inference": round(result.speed.get("inference", 0.0), 2),
+        "postprocess": round(result.speed.get("postprocess", 0.0), 2),
+    }
+    tempo_total_ms = round(sum(duracao.values()), 2)
 
     persons = []
     itens_por_classe = {}
@@ -64,7 +66,7 @@ def rodar_deteccao(imagem):
         else:
             itens_por_classe.setdefault(class_name, []).append(xyxy)
 
-    return result, persons, itens_por_classe, tempo_inferencia_ms
+    return result, persons, itens_por_classe, tempo_total_ms, duracao
 
 
 def esta_associado_a_pessoa(item_bbox, pessoa_bbox):
@@ -117,6 +119,90 @@ def checar_epis_faltando(persons, itens_por_classe):
     return alertas
 
 
+def desenhar_anotacoes(imagem, deteccoes, alertas, tempo_total_ms=None, duracao=None):
+    """
+    Desenha caixas delimitadoras padronizadas, cores por classe e status
+    de conformidade (verde/vermelho) diretamente no frame.
+    """
+    frame = imagem.copy()
+    h, w, _ = frame.shape
+
+    # 1. Desenha os itens de EPI detectados
+    for det in deteccoes:
+        classe = det.get("classe", "")
+        if classe == "human":
+            continue  # O trabalhador e desenhado com o status de conformidade abaixo
+
+        conf = det.get("confianca", 0.0)
+        bbox = det.get("bbox", [0, 0, 0, 0])
+        x1, y1, x2, y2 = map(int, bbox)
+        cor = CLASS_COLORS.get(classe, (0, 255, 0))
+
+        # Caixa do EPI
+        cv2.rectangle(frame, (x1, y1), (x2, y2), cor, 2)
+
+        # Label do EPI com fundo colorido para facilitar a leitura
+        texto = f"{classe} ({conf:.2f})"
+        (tw, th), _ = cv2.getTextSize(texto, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        cv2.rectangle(frame, (x1, max(0, y1 - th - 6)), (x1 + tw + 4, max(0, y1)), cor, -1)
+        cv2.putText(frame, texto, (x1 + 2, max(0, y1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+
+    # 2. Desenha cada pessoa com status de conformidade (Verde se OK, Vermelho se irregular)
+    pessoas_conformes = 0
+    total_pessoas = len(alertas)
+
+    for alerta in alertas:
+        bbox = alerta.get("pessoa_bbox", [0, 0, 0, 0])
+        x1, y1, x2, y2 = map(int, bbox)
+        faltando = alerta.get("epis_faltando", [])
+
+        if not faltando:
+            pessoas_conformes += 1
+            cor_pessoa = (0, 200, 0)  # Verde
+            status_texto = "CONFORME [OK]"
+        else:
+            cor_pessoa = (0, 0, 255)  # Vermelho
+            status_texto = f"FALTANDO: {', '.join(faltando)}"
+
+        # Caixa da pessoa
+        cv2.rectangle(frame, (x1, y1), (x2, y2), cor_pessoa, 3)
+
+        # Barra de status sobre a pessoa
+        (tw, th), _ = cv2.getTextSize(status_texto, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+        bg_y1 = max(0, y1 - th - 10)
+        bg_y2 = max(0, y1)
+        cv2.rectangle(frame, (x1, bg_y1), (x1 + tw + 10, bg_y2), cor_pessoa, -1)
+        cv2.putText(frame, status_texto, (x1 + 5, bg_y2 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+
+    # 3. HUD Superior (Painel de Status)
+    hud_bg_color = (30, 30, 30)
+    cv2.rectangle(frame, (0, 0), (w, 42), hud_bg_color, -1)
+
+    if total_pessoas == 0:
+        conformidade_str = "Nenhum trabalhador na cena"
+        status_color = (200, 200, 200)
+    elif pessoas_conformes == total_pessoas:
+        conformidade_str = f"STATUS: 100% SEGURO ({pessoas_conformes}/{total_pessoas})"
+        status_color = (0, 255, 0)
+    else:
+        conformidade_str = f"ALERTA: {total_pessoas - pessoas_conformes} IRREGULAR(ES) ({pessoas_conformes}/{total_pessoas})"
+        status_color = (0, 0, 255)
+
+    cv2.putText(frame, conformidade_str, (15, 27), cv2.FONT_HERSHEY_SIMPLEX, 0.65, status_color, 2, cv2.LINE_AA)
+
+    # Exibe métricas de tempo (detalhado por pré/inferência/pós se disponível)
+    if duracao and isinstance(duracao, dict):
+        metricas_str = f"Total: {tempo_total_ms:.1f}ms (Pre: {duracao.get('preprocess', 0):.1f} | Inf: {duracao.get('inference', 0):.1f} | Pos: {duracao.get('postprocess', 0):.1f})"
+        (mw, _), _ = cv2.getTextSize(metricas_str, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+        cv2.putText(frame, metricas_str, (w - mw - 15, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 220, 220), 1, cv2.LINE_AA)
+    elif tempo_total_ms is not None:
+        metricas_str = f"Tempo: {tempo_total_ms:.1f}ms"
+        (mw, _), _ = cv2.getTextSize(metricas_str, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        cv2.putText(frame, metricas_str, (w - mw - 15, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1, cv2.LINE_AA)
+
+    return frame
+
+
 def ler_imagem_do_upload(conteudo: bytes):
     """Converte os bytes recebidos por HTTP numa imagem que o OpenCV entende."""
     imagem = cv2.imdecode(np.frombuffer(conteudo, np.uint8), cv2.IMREAD_COLOR)
@@ -133,6 +219,7 @@ def ler_imagem_do_upload(conteudo: bytes):
 def root():
     return RedirectResponse(url="/docs")
 
+
 @app.get("/health")
 def health():
     """Endpoint simples para checar se a API esta no ar (usado pelo Docker)."""
@@ -141,13 +228,17 @@ def health():
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
+    """
+    Endpoint 1 (JSON): Recebe uma imagem e retorna detecções, caixas,
+    confiança, alertas de EPIs faltantes, tempo total e duração detalhada.
+    """
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Envie um arquivo de imagem")
 
     conteudo = await file.read()
     imagem = ler_imagem_do_upload(conteudo)
 
-    result, persons, itens_por_classe, tempo_inferencia_ms = rodar_deteccao(imagem)
+    result, persons, itens_por_classe, tempo_total_ms, duracao = rodar_deteccao(imagem)
     alertas = checar_epis_faltando(persons, itens_por_classe)
 
     deteccoes = [
@@ -162,17 +253,17 @@ async def predict(file: UploadFile = File(...)):
     return {
         "deteccoes": deteccoes,
         "alertas": alertas,
-        "tempo_inferencia_ms": tempo_inferencia_ms,
+        "tempo_total_ms": tempo_total_ms,
+        "duracao_ms": duracao,
     }
+
 
 @app.post("/predict/annotated")
 async def predict_annotated(file: UploadFile = File(...)):
     """
-    Endpoint 2 (imagem): recebe uma imagem e devolve a mesma imagem
-    com as caixas desenhadas em cima (PNG) - equivalente ao
-    cv2.imshow(...) do seu script, so que devolvendo os bytes da
-    imagem em vez de abrir uma janela (dentro do Docker nao tem tela
-    para abrir janela).
+    Endpoint 2 (Imagem Anotada): Recebe uma imagem e retorna o frame com
+    caixas delimitadoras customizadas, cores padronizadas e indicadores
+    de conformidade (verde/vermelho).
     """
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Envie um arquivo de imagem")
@@ -180,8 +271,19 @@ async def predict_annotated(file: UploadFile = File(...)):
     conteudo = await file.read()
     imagem = ler_imagem_do_upload(conteudo)
 
-    result, _, _, _ = rodar_deteccao(imagem)
-    frame_anotado = result.plot()  # a mesma linha "annotated_frame = results[0].plot()" do seu script
+    result, persons, itens_por_classe, tempo_total_ms, duracao = rodar_deteccao(imagem)
+    alertas = checar_epis_faltando(persons, itens_por_classe)
+
+    deteccoes = [
+        {
+            "classe": CLASS_NAMES.get(int(box.cls[0]), str(int(box.cls[0]))),
+            "confianca": round(float(box.conf[0]), 3),
+            "bbox": [round(v, 1) for v in box.xyxy[0].tolist()],
+        }
+        for box in result.boxes
+    ]
+
+    frame_anotado = desenhar_anotacoes(imagem, deteccoes, alertas, tempo_total_ms, duracao)
 
     ok, png = cv2.imencode(".png", frame_anotado)
     if not ok:

@@ -90,7 +90,7 @@ if cv2.waitKey(0) & 0xFF == ord('q'):
 
 # # 1. Carrega o modelo que você treinou
 # # (Ajuste a pasta se o seu treino mais recente tiver outro nome, ex: train-5)
-# model = YOLO(r"runs\detect\train-8\weights\best.pt")
+# model = YOLO(r"runs\\detect\\train-8\\weights\\best.pt")
 
 # # 2. Abre a webcam (0 geralmente é a câmera padrão do notebook/computador)
 # cap = cv2.VideoCapture(0)

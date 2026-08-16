@@ -1,0 +1,35 @@
+services:
+  epi-api:
+    container_name: epi-api
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # Suporte multi-arquitetura nativo (linux/amd64 e linux/arm64 para Raspberry Pi 5)
+      platforms:
+        - "linux/amd64"
+        - "linux/arm64"
+    image: edge-ai-epi:latest
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      - MODEL_PATH=${MODEL_PATH:-runs/detect/train-8/weights/best.pt}
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+    volumes:
+      # Monta o diretório de runs/pesos para permitir atualização do modelo sem reconstruir a imagem
+      - ./runs:/app/runs:ro
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # Descomente a seção abaixo caso execute em host x86_64 com GPU NVIDIA e NVIDIA Container Toolkit
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]

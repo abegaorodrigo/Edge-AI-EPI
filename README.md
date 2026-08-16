@@ -25,6 +25,7 @@ O projeto utiliza um modelo customizado **YOLOv8** integrado a uma **API REST de
   - [Instalação](#instalação)
   - [Download do Dataset (Roboflow)](#download-do-dataset-roboflow)
   - [Executando a API REST](#executando-a-api-rest)
+  - [Executando com Docker](#executando-com-docker)
   - [Executando a Prova de Conceito (POC / Câmera)](#executando-a-prova-de-conceito-poc--câmera)
   - [Treinamento do Modelo](#treinamento-do-modelo)
 - [Documentação dos Endpoints](#-documentação-dos-endpoints)
@@ -120,6 +121,8 @@ Edge-AI-EPI/
 ├── baixar_image.py         # Script de ingestão/download do dataset via Roboflow
 ├── yolov8n.pt              # Pesos pré-treinados base
 ├── requirements.txt        # Dependências e bibliotecas do projeto
+├── Dockerfile              # Configuração da imagem de container para produção
+├── .dockerignore           # Arquivos ignorados no build do Docker
 ├── .gitignore              # Regras de exclusão do Git
 ├── README.md               # Documentação técnica do projeto
 │
@@ -202,6 +205,30 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 A API estará disponível em `http://localhost:8000`.
 Acesse a documentação interativa Swagger em: **`http://localhost:8000/docs`**.
+
+---
+
+### Executando com Docker
+
+Construa a imagem e inicie o container com facilidade:
+
+1. **Construir a imagem**:
+```bash
+docker build -t edge-ai-epi .
+```
+
+2. **Executar o container**:
+```bash
+docker run -d -p 8000:8000 --name epi-api edge-ai-epi
+```
+
+3. **(Opcional) Executar montando modelo externo ou alterando porta**:
+```bash
+docker run -d -p 8000:8000 \
+  -v ./runs:/app/runs \
+  -e MODEL_PATH="runs/detect/train-8/weights/best.pt" \
+  --name epi-api edge-ai-epi
+```
 
 ---
 

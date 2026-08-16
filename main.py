@@ -18,7 +18,7 @@ import os
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import Response, RedirectResponse
 from ultralytics import YOLO
 
 app = FastAPI(title="Deteccao de EPIs")
@@ -128,6 +128,10 @@ def ler_imagem_do_upload(conteudo: bytes):
 # --------------------------------------------------------------------
 # 3. Endpoints HTTP
 # --------------------------------------------------------------------
+
+@app.get("/")
+def root():
+    return RedirectResponse(url="/docs")
 
 @app.get("/health")
 def health():

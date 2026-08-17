@@ -114,28 +114,45 @@ flowchart TD
 ```plaintext
 Edge-AI-EPI/
 │
-├── main.py                 # Aplicação FastAPI com endpoints REST e lógica de predição
-├── poc.py                  # Script de Prova de Conceito (OpenCV + visualização em tempo real)
-├── train.py                # Pipeline de treinamento do modelo YOLOv8
-├── baixar_image.py         # Script de ingestão/download do dataset via Roboflow
-├── yolov8n.pt              # Pesos pré-treinados base
-├── requirements.txt        # Dependências e bibliotecas do projeto
-├── .gitignore              # Regras de exclusão do Git
-├── README.md               # Documentação técnica do projeto
+├── main.py                     # Ponto de entrada: instancia o FastAPI e registra as rotas
+├── camera.py                   # Cliente de câmera local (envia frames para a API via HTTP)
+├── poc.py                      # Script de Prova de Conceito (OpenCV + visualização local)
+├── train.py                    # Pipeline de treinamento do modelo YOLOv8
+├── baixar_image.py             # Download do dataset via Roboflow
+├── yolov8n.pt                  # Pesos pré-treinados base (fallback)
+├── requirements.txt            # Dependências do projeto
+├── Dockerfile                  # Container Docker para a API (CPU, multi-arch)
+├── Dockerfile.camera           # Container Docker para cliente de câmera (ARM)
+├── docker-compose.yml          # Orquestrador dos serviços
+├── .env.example                # Modelo de variáveis de ambiente
+├── .gitignore
+└── README.md
 │
-├── PPE-Detection-1/        # Dataset anotado (imagens e anotações YOLO)
-│   ├── data.yaml           # Configuração de caminhos e nomes das classes
-│   ├── train/              # Conjunto de treino
-│   ├── valid/              # Conjunto de validação
-│   └── test/               # Conjunto de testes
+├── app/                        # Pacote principal da aplicação (arquitetura modular)
+│   ├── api/
+│   │   └── routes.py           # Definição dos endpoints REST (/predict, /predict/annotated)
+│   ├── core/
+│   │   ├── config.py           # Constantes: MODEL_PATH, CLASS_NAMES, CLASS_COLORS, etc.
+│   │   └── model.py            # Singleton do modelo YOLOv8 (carregado uma única vez)
+│   ├── services/
+│   │   ├── detection_service.py  # Executa inferência e associação pessoa-EPI
+│   │   └── image_service.py      # Decodificação de upload e codificação PNG
+│   └── utils/
+│       └── annotations.py      # Renderização de caixas, HUD e status de conformidade
+│
+├── PPE-Detection-1/            # Dataset anotado (formato YOLOv8 / Roboflow)
+│   ├── data.yaml               # Configuração de classes e caminhos
+│   ├── train/                  # Imagens e labels de treino
+│   ├── valid/                  # Imagens e labels de validação
+│   └── test/                   # Imagens e labels de teste
 │
 └── runs/
     └── detect/
-        └── train-8/        # Artefatos do treinamento principal
+        └── train-8/            # Artefatos do treinamento
             ├── weights/
-            │   └── best.pt # Melhores pesos gerados durante o treino
-            ├── results.png # Gráficos de perda, mAP, precisão e recall
-            └── results.csv # Log numérico das épocas de treino
+            │   └── best.pt     # Melhores pesos gerados durante o treino
+            ├── results.png     # Gráficos de perda, mAP, precisão e recall
+            └── results.csv     # Log numérico das épocas
 ```
 
 ---
@@ -194,26 +211,65 @@ dataset = project.version(1).download("yolov8")
 
 ### Executando a API REST
 
-Inicie o servidor HTTP com Uvicorn:
+#### Opção 1 — Localmente com Uvicorn
 
 ```bash
+# Ative o ambiente virtual (Windows)
+.venv\Scripts\activate
+
+# Inicie o servidor
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-A API estará disponível em `http://localhost:8000`.
+A API estará disponível em `http://localhost:8000`.  
 Acesse a documentação interativa Swagger em: **`http://localhost:8000/docs`**.
+
+#### Opção 2 — Com Docker Compose (recomendado para produção)
+
+```bash
+# Sobe a API em container (monta o volume de modelos automaticamente)
+docker compose up -d --build
+
+# Acompanhe os logs
+docker compose logs -f epi-api
+```
+
+O container expõe a API na porta **8000**. O modelo em `runs/detect/train-8/weights/best.pt` é montado como volume, sem precisar reconstruir a imagem a cada novo treino.
 
 ---
 
-### Executando a Prova de Conceito (POC / Câmera)
+### Executando o Cliente de Câmera
 
-Para testar a detecção em uma imagem local ou webcam via janela interativa do OpenCV:
+O `camera.py` captura frames da webcam local e os envia continuamente para o endpoint `/predict/annotated` da API, exibindo a imagem anotada em tempo real.
+
+**Pré-requisito:** a API deve estar rodando (localmente ou via Docker).
+
+```bash
+# Windows — com venv ativado
+python camera.py
+
+# Ou diretamente pelo executável do venv
+.venv\Scripts\python.exe camera.py
+```
+
+- Pressione **`q`** na janela do OpenCV para encerrar.
+- Para rodar o cliente em um container ARM (Raspberry Pi, etc.), use o `Dockerfile.camera`:
+
+```bash
+docker build -f Dockerfile.camera -t epi-camera .
+docker run --rm --network host --device /dev/video0 epi-camera
+```
+
+---
+
+### Executando a Prova de Conceito (POC / Offline)
+
+Para testar a detecção diretamente em uma imagem ou webcam **sem** a API (inferência local):
 
 ```bash
 python poc.py
 ```
 
-- Para alternar entre imagem estática e webcam, edite as linhas de captura em `poc.py`.
 - Pressione a tecla **`q`** na janela de exibição para encerrar.
 
 ---
@@ -339,11 +395,12 @@ for i, alerta in enumerate(dados["alertas"], 1):
 
 ## ⚙️ Variáveis de Ambiente
 
-É possível customizar os caminhos dos modelos e dados sem alterar o código-fonte através de variáveis de ambiente:
+Todas as variáveis são lidas em `app/core/config.py` e podem ser definidas em um arquivo `.env` (veja `.env.example`) ou passadas diretamente ao Docker:
 
 | Variável | Padrão | Descrição |
 |:---------|:-------|:----------|
-| `MODEL_PATH` | `.\runs\detect\train-8\weights\best.pt` | Caminho para os pesos do modelo YOLOv8 utilizado pela API (`main.py`) |
+| `MODEL_PATH` | `.\runs\detect\train-8\weights\best.pt` | Caminho para os pesos do modelo YOLOv8 utilizado pela API |
+| `CONFIDENCE_THRESHOLD` | `0.5` | Limiar mínimo de confiança para aceitar uma detecção |
 | `TRAIN_MODEL_PATH` | `yolov8n.pt` | Modelo base de partida para o script de treino (`train.py`) |
 | `TRAIN_DATA_PATH` | `.\PPE-Detection-1\data.yaml` | Caminho do manifesto de dados para o treino (`train.py`) |
 

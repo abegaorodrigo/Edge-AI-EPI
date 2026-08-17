@@ -9,9 +9,9 @@ services:
         - "linux/amd64"
         - "linux/arm64"
     image: edge-ai-epi:latest
-    restart: unless-stopped #always se quiser que ele reinicie sempre 
+    restart: unless-stopped
     ports:
-      - "${PORT:-8000}:8000" # mapeia a porta 8000 do container para a porta 8000 do host (pc)
+      - "${PORT:-8000}:8000"
     environment:
       - MODEL_PATH=${MODEL_PATH:-runs/detect/train-8/weights/best.pt}
       - PYTHONUNBUFFERED=1
@@ -25,3 +25,11 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    # Descomente a seção abaixo caso execute em host x86_64 com GPU NVIDIA e NVIDIA Container Toolkit
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
